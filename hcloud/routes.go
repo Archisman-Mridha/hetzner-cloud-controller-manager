@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
@@ -84,6 +85,14 @@ func (r *routes) ListRoutes(ctx context.Context, _ string) ([]*cloudprovider.Rou
 // route.Name will be ignored, although the cloud-provider may use nameHint
 // to create a more user-meaningful name.
 func (r *routes) CreateRoute(ctx context.Context, clusterName, nameHint string, route *cloudprovider.Route) error {
+	// We don't need to create any route in case of Hetzner Bare Metal nodes.
+	// The cluster bootstrapper is responsible for doing it, following Hetzner's docs on VSwitch :
+	// https://docs.hetzner.com/robot/dedicated-server/network/vswitch#server-configuration-linux.
+	isHBMSNode := strings.HasPrefix(string(route.TargetNode), "bm-")
+	if isHBMSNode {
+		return nil
+	}
+
 	const op = "hcloud/CreateRoute"
 	metrics.OperationCalled.WithLabelValues(op).Inc()
 
