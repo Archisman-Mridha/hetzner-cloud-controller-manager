@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
+	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // LabelServiceUID is a label added to the Hetzner Cloud backend to uniquely
@@ -70,6 +72,7 @@ type HCloudLoadBalancerClient interface {
 
 // LoadBalancerOps implements all operations regarding Hetzner Cloud Load Balancers.
 type LoadBalancerOps struct {
+	ClusterClient k8sclient.Client
 	LBClient      HCloudLoadBalancerClient
 	ActionClient  HCloudActionClient
 	NetworkClient HCloudNetworkClient
@@ -662,10 +665,32 @@ func (l *LoadBalancerOps) ReconcileHCLBTargets(
 	}
 
 	for _, s := range dedicatedServers {
-		robotIPsToIDs[s.ServerIP] = s.ServerNumber
-		robotIPsToIDs[s.ServerIPv6Net+"1"] = s.ServerNumber
-		robotIDToIPv4[s.ServerNumber] = s.ServerIP
-		robotIDToIPv6[s.ServerNumber] = s.ServerIPv6Net + "1"
+		// Check, whether a private IP address has been assigned to the Hetzner Bare Metal server
+		// (HBMS).
+		// When yes, we'll use that, and not consider the public IP addresses, since they are disabled
+		// by us.
+		serverID := fmt.Sprintf("%d", s.ServerNumber)
+		privateIP, err := client.GetHBMSPrivateIP(l.ClusterClient, serverID)
+		if err != nil {
+			// A HetznerBareMetalHost resource corresponding to the server doesn't exist.
+			// Which means, the server isn't part of this cluster. And, we'll ignore it.
+			if strings.Contains(err.Error(), "not found") {
+				continue
+			}
+
+			return changed, fmt.Errorf("failed determining whether private IP is assigned to Hetzner Bare Metal server %s : %v", serverID, err)
+		}
+
+		if privateIP != nil {
+			robotIPsToIDs[*privateIP] = s.ServerNumber
+			robotIDToIPv4[s.ServerNumber] = *privateIP
+		} else {
+			robotIPsToIDs[s.ServerIP] = s.ServerNumber
+			robotIDToIPv4[s.ServerNumber] = s.ServerIP
+
+			robotIPsToIDs[s.ServerIPv6Net+"1"] = s.ServerNumber
+			robotIDToIPv6[s.ServerNumber] = s.ServerIPv6Net + "1"
+		}
 	}
 
 	numberOfTargets := len(lb.Targets)

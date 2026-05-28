@@ -13,15 +13,15 @@
 # limitations under the License.
 
 # Build the manager binary
-FROM --platform=${BUILDPLATFORM} docker.io/library/golang:1.24.5-bullseye@sha256:62ba6b19de03e891f7fa1001326bd48411f2626ff35e7ba5b9d890711ce581d9 AS build
+FROM --platform=${BUILDPLATFORM} docker.io/library/golang:1.26.0-bookworm AS build
 ARG TARGETOS TARGETARCH
 
 COPY . /src/hetzner-cloud-controller-manager
 WORKDIR /src/hetzner-cloud-controller-manager
 RUN --mount=type=cache,target=/root/.cache --mount=type=cache,target=/go/pkg \
-    GOOS=${TARGETOS} GOARCH=${TARGETARCH} CGO_ENABLED=0 \
-    go build -mod=readonly -ldflags "-extldflags '-static'" \
-    -o manager .
+  GOOS=${TARGETOS} GOARCH=${TARGETARCH} CGO_ENABLED=0 \
+  go build -mod=readonly -ldflags "-extldflags '-static'" \
+  -o manager .
 
 FROM --platform=${BUILDPLATFORM} gcr.io/distroless/static:nonroot
 WORKDIR /

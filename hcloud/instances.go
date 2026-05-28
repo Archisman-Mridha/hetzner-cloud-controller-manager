@@ -29,6 +29,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type addressFamily int
@@ -40,6 +41,7 @@ const (
 )
 
 type instances struct {
+	clusterClient       client.Client
 	client              *hcloud.Client
 	robotClient         robotclient.Client
 	addressFamily       addressFamily
@@ -50,6 +52,7 @@ type instances struct {
 var errServerNotFound = fmt.Errorf("server not found")
 
 func newInstances(
+	clusterClient client.Client,
 	client *hcloud.Client,
 	robotClient robotclient.Client,
 	addressFamily addressFamily,
@@ -57,6 +60,7 @@ func newInstances(
 	useHrobotProviderID bool,
 ) *instances {
 	return &instances{
+		clusterClient:       clusterClient,
 		client:              client,
 		robotClient:         robotClient,
 		addressFamily:       addressFamily,
@@ -175,6 +179,10 @@ func (i *instances) InstanceMetadata(ctx context.Context, node *corev1.Node) (me
 			node.Name, errServerNotFound)
 	}
 	providerID := providerid.GetBaremetalProviderID(node, bmServer.ServerNumber, i.useHrobotProviderID)
+	robotNodeAddresses, err := i.robotNodeAddresses(bmServer)
+	if err != nil {
+		return nil, fmt.Errorf("failed getting Hetzner Bare Metal server's addresses : %w", err)
+	}
 	return &cloudprovider.InstanceMetadata{
 		// By default this returns the legacy format "hcloud://bm-NNNN". When the
 		// --use-hrobot-provider-id-for-baremetal flag is set, it returns "hrobot://NNNN".
@@ -182,7 +190,7 @@ func (i *instances) InstanceMetadata(ctx context.Context, node *corev1.Node) (me
 		// https://github.com/syself/cluster-api-provider-hetzner/pull/1703
 		ProviderID:    providerID,
 		InstanceType:  getInstanceTypeOfRobotServer(bmServer),
-		NodeAddresses: robotNodeAddresses(i.addressFamily, bmServer),
+		NodeAddresses: robotNodeAddresses,
 		Zone:          getZoneOfRobotServer(bmServer),
 		Region:        getRegionOfRobotServer(bmServer),
 	}, nil
@@ -231,14 +239,34 @@ func hcloudNodeAddresses(addressFamily addressFamily, networkID int64, server *h
 	return addresses
 }
 
-func robotNodeAddresses(addressFamily addressFamily, server *models.Server) []corev1.NodeAddress {
+func (i *instances) robotNodeAddresses(server *models.Server) ([]corev1.NodeAddress, error) {
 	var addresses []corev1.NodeAddress
 	addresses = append(
 		addresses,
 		corev1.NodeAddress{Type: corev1.NodeHostName, Address: server.Name},
 	)
 
-	if addressFamily == AddressFamilyIPv6 || addressFamily == AddressFamilyDualStack {
+	// Check, whether a private IP address has been assigned to the Hetzner Bare Metal server (HBMS).
+	// When yes, we'll use that, and not consider the public IP addresses, since they are disabled by
+	// us.
+	serverID := fmt.Sprintf("%d", server.ServerNumber)
+	privateIP, err := robotclient.GetHBMSPrivateIP(i.clusterClient, serverID)
+	if err != nil {
+		return []corev1.NodeAddress{}, fmt.Errorf(
+			"failed determining whether private IP is assigned to Hetzner Bare Metal server %s : %v",
+			serverID, err,
+		)
+	}
+	if privateIP != nil {
+		return []corev1.NodeAddress{{
+			Type:    corev1.NodeInternalIP,
+			Address: *privateIP,
+		}}, nil
+	}
+
+	// Otherwise, we consider the public IPv4 and Ipv6 addresses as usual.
+
+	if i.addressFamily == AddressFamilyIPv6 || i.addressFamily == AddressFamilyDualStack {
 		// For a given IPv6 network of 2a01:f48:111:4221::, the instance address is 2a01:f48:111:4221::1
 		hostAddress := server.ServerIPv6Net
 		hostAddress += "1"
@@ -249,12 +277,12 @@ func robotNodeAddresses(addressFamily addressFamily, server *models.Server) []co
 		)
 	}
 
-	if addressFamily == AddressFamilyIPv4 || addressFamily == AddressFamilyDualStack {
+	if i.addressFamily == AddressFamilyIPv4 || i.addressFamily == AddressFamilyDualStack {
 		addresses = append(
 			addresses,
 			corev1.NodeAddress{Type: corev1.NodeExternalIP, Address: server.ServerIP},
 		)
 	}
 
-	return addresses
+	return addresses, nil
 }

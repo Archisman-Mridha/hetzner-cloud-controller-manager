@@ -30,16 +30,20 @@ import (
 
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud/metadata"
+	caphv1beta1 "github.com/syself/cluster-api-provider-hetzner/api/v1beta1"
 	"github.com/syself/hetzner-cloud-controller-manager/internal/credentials"
 	"github.com/syself/hetzner-cloud-controller-manager/internal/hcops"
 	"github.com/syself/hetzner-cloud-controller-manager/internal/metrics"
 	robotclient "github.com/syself/hetzner-cloud-controller-manager/internal/robot/client"
 	"github.com/syself/hetzner-cloud-controller-manager/internal/robot/client/cache"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -229,7 +233,24 @@ func newCloud(_ io.Reader) (cloudprovider.Interface, error) {
 	eventBroadcaster := record.NewBroadcaster()
 	lbRecorder := eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "hetzner-ccm-loadbalancer"})
 
+	// Create Kubernetes cluster client.
+	scheme := runtime.NewScheme()
+	if err := caphv1beta1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed adding CAPH (v1beta1) to scheme : %v", err)
+	}
+	clusterClientConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed getting cluster client config : %v", err)
+	}
+	clusterClient, err := client.New(clusterClientConfig, client.Options{
+		Scheme: scheme,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed getting cluster client : %v", err)
+	}
+
 	lbOps := &hcops.LoadBalancerOps{
+		ClusterClient: clusterClient,
 		LBClient:      &hcloudClient.LoadBalancer,
 		CertOps:       &hcops.CertificateOps{CertClient: &hcloudClient.Certificate},
 		ActionClient:  &hcloudClient.Action,
@@ -263,10 +284,19 @@ func newCloud(_ io.Reader) (cloudprovider.Interface, error) {
 		}
 	}
 
+	instances := newInstances(
+		clusterClient,
+		hcloudClient,
+		robotClient,
+		instancesAddressFamily,
+		networkID,
+		useHrobotProviderIDForBaremetal,
+	)
+
 	return &cloud{
 		hcloudClient: hcloudClient,
 		robotClient:  robotClient,
-		instances:    newInstances(hcloudClient, robotClient, instancesAddressFamily, networkID, useHrobotProviderIDForBaremetal),
+		instances:    instances,
 		loadBalancer: loadBalancers,
 		routes:       nil,
 		networkID:    networkID,

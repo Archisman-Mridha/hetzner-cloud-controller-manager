@@ -816,7 +816,7 @@ func TestNodeAddressesRobotServer(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			addresses := robotNodeAddresses(test.addressFamily, test.server)
+			addresses, _ := robotNodeAddresses(test.addressFamily, test.server)
 
 			if !reflect.DeepEqual(addresses, test.expected) {
 				t.Fatalf("%s: expected addresses %+v but got %+v", test.name, test.expected, addresses)
